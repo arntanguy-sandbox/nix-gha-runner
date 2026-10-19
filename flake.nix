@@ -49,6 +49,7 @@
           ({ pkgs, config, ... }: {
             microvm = {
               hypervisor = "qemu"; # User-mode networking requires QEMU
+              mem = 16384; # 16Go RAM allocation
               interfaces = [
                 {
                   # User-mode networking requires no root/sudo privileges on the host
@@ -62,9 +63,9 @@
               writableStoreOverlay = "/nix/.rw-store";
               volumes = [
                 {
-                  image = "nix-store-overlay-gh-runner-org-arntanguy-sandbox.img";
+                  image = "volumes/nix-store-overlay-gh-runner-org-arntanguy-sandbox.img";
                   mountPoint = config.microvm.writableStoreOverlay;
-                  size = 2048;
+                  size = 20000; # Mb
                 }
               ];
 
@@ -74,6 +75,18 @@
               "nix-command"
               "flakes"
             ];
+            nix.settings.trusted-users = [
+              "root"
+              "github-runner"
+            ];
+            # Explicitly create the system user and group ---
+            users.users.github-runner = {
+              isSystemUser = true;
+              group = "github-runner";
+              home = "/var/lib/github-runner";
+              createHome = true;
+            };
+            users.groups.github-runner = { };
 
             virtualisation.docker.enable = true;
 
@@ -81,13 +94,20 @@
 
             services.github-runners.gh-runner-org-arntanguy-sandbox = {
               enable = true;
+              # Force a predictable static username instead of a dynamic user
+              user = "github-runner";
+              group = "github-runner";
               url = "https://github.com/arntanguy-sandbox";
               tokenFile =
                 let
                   tf = config.sops.secrets.arntanguy-sandbox-github_token.path;
                 in
                 builtins.trace "using tokenFile ${tf}" tf;
-              runnerGroup = "lirmm_private";
+              runnerGroup = "Default";
+              extraLabels = [
+                "nix"
+                "docker"
+              ];
               replace = true;
               ephemeral = true;
               extraPackages = with pkgs; [
@@ -97,11 +117,15 @@
                 nix
                 bash
                 coreutils
+                cachix
               ];
             };
 
-            systemd.services."github-runner-gh-runner-org-arntanguy-sandbox".serviceConfig.ExecStopPost =
-              "${pkgs.systemd}/bin/poweroff";
+            systemd.services."github-runner-gh-runner-org-arntanguy-sandbox".serviceConfig = {
+              ExecStopPost = "+poweroff -f";
+              # Make sure util-linux (which provides poweroff) is in the PATH for this service
+              path = [ pkgs.util-linux ];
+            };
 
             system.stateVersion = "26.04";
 
