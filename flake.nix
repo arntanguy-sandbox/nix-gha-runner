@@ -79,11 +79,14 @@
               "root"
               "github-runner"
             ];
+
+            nix.settings.extra-sandbox-paths = [ config.programs.ccache.cacheDir ];
+
             # Explicitly create the system user and group ---
             users.users.github-runner = {
               isSystemUser = true;
               group = "github-runner";
-              home = "/var/lib/github-runner";
+              home = "/run/github-runner/gh-runner-org-isri-aist";
               createHome = true;
             };
             users.groups.github-runner = { };
@@ -118,6 +121,8 @@
                 bash
                 coreutils
                 cachix
+                attic-client
+                openssh
               ];
             };
 
@@ -143,6 +148,7 @@
           ({ pkgs, config, ... }: {
             microvm = {
               hypervisor = "qemu"; # User-mode networking requires QEMU
+              mem = 16384; # 16Go RAM allocation
               interfaces = [
                 {
                   # User-mode networking requires no root/sudo privileges on the host
@@ -151,16 +157,89 @@
                   mac = "02:00:00:00:00:01";
                 }
               ];
+              # An optional writable layer will be mounted if the path microvm.writableStoreOverlay is set. Make sure that the path is located on a writable filesystem.
+              # Caveat: The Linux overlay filesystem is very picky about the filesystems that can be the upper (writable) layer. 9p/virtiofs shares don’t work currently, so resort to using a volume for that:
+              writableStoreOverlay = "/nix/.rw-store";
+              volumes = [
+                {
+                  image = "volumes/nix-store-overlay-gh-runner-org-isri-aist.img";
+                  mountPoint = config.microvm.writableStoreOverlay;
+                  size = 20000; # Mb
+                }
+              ];
+
             };
+
+            nix.settings.experimental-features = [
+              "nix-command"
+              "flakes"
+            ];
+            nix.settings.trusted-users = [
+              "root"
+              "github-runner"
+            ];
+
+            nix.settings.extra-sandbox-paths = [ config.programs.ccache.cacheDir ];
+            nixpkgs.overlays = [
+              (self: super: {
+                ccacheWrapper =
+                  builtins.trace "ccache directory: ${config.programs.ccache.ccacheDir}" super.ccacheWrapper.override
+                    {
+                      extraConfig = ''
+                        export CCACHE_COMPRESS=1
+                        export CCACHE_DIR="${config.programs.ccache.cacheDir}"
+                        export CCACHE_UMASK=007
+                        export CCACHE_SLOPPINESS=random_seed
+                        if [ ! -d "$CCACHE_DIR" ]; then
+                          echo "====="
+                          echo "Directory '$CCACHE_DIR' does not exist"
+                          echo "Please create it with:"
+                          echo "  sudo mkdir -m0770 '$CCACHE_DIR'"
+                          echo "  sudo chown root:nixbld '$CCACHE_DIR'"
+                          echo "====="
+                          exit 1
+                        fi
+                        if [ ! -w "$CCACHE_DIR" ]; then
+                          echo "====="
+                          echo "Directory '$CCACHE_DIR' is not accessible for user $(whoami)"
+                          echo "Please verify its access permissions"
+                          echo "====="
+                          exit 1
+                        fi
+                      '';
+                    };
+              })
+            ];
+
+            # Explicitly create the system user and group ---
+            users.users.github-runner = {
+              isSystemUser = true;
+              group = "github-runner";
+              home = "/run/github-runner/gh-runner-org-isri-aist";
+              createHome = true;
+            };
+            users.groups.github-runner = { };
+
+            virtualisation.docker.enable = true;
 
             services.getty.autologinUser = "root";
 
             services.github-runners.gh-runner-org-isri-aist = {
               enable = true;
+              # Force a predictable static username instead of a dynamic user
+              user = "github-runner";
+              group = "github-runner";
               url = "https://github.com/isri-aist";
-              tokenFile = config.sops.secrets.isri-aist-github_token.path;
-              tokenType = "registration";
-              runnerGroup = "lirmm_private";
+              tokenFile =
+                let
+                  tf = config.sops.secrets.isri-aist-github_token.path;
+                in
+                builtins.trace "using tokenFile ${tf}" tf;
+              runnerGroup = "Default";
+              extraLabels = [
+                "nix"
+                "docker"
+              ];
               replace = true;
               ephemeral = true;
               extraPackages = with pkgs; [
@@ -170,13 +249,19 @@
                 nix
                 bash
                 coreutils
+                cachix
+                attic-client
+                openssh
               ];
             };
 
-            systemd.services."github-runner-gh-runner-org-isri-aist".serviceConfig.ExecStopPost =
-              "${pkgs.systemd}/bin/poweroff";
+            systemd.services."github-runner-gh-runner-org-isri-aist".serviceConfig = {
+              ExecStopPost = "+poweroff -f";
+              # Make sure util-linux (which provides poweroff) is in the PATH for this service
+              path = [ pkgs.util-linux ];
+            };
 
-            system.stateVersion = "24.05";
+            system.stateVersion = "26.04";
 
           })
           ./modules/secrets.nix
