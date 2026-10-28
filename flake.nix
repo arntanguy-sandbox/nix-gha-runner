@@ -58,17 +58,21 @@
                   mac = "02:00:00:00:00:01";
                 }
               ];
-              # An optional writable layer will be mounted if the path microvm.writableStoreOverlay is set. Make sure that the path is located on a writable filesystem.
-              # Caveat: The Linux overlay filesystem is very picky about the filesystems that can be the upper (writable) layer. 9p/virtiofs shares don’t work currently, so resort to using a volume for that:
               writableStoreOverlay = "/nix/.rw-store";
               volumes = [
+                # An optional writable layer will be mounted if the path microvm.writableStoreOverlay is set. Make sure that the path is located on a writable filesystem.
+                # Caveat: The Linux overlay filesystem is very picky about the filesystems that can be the upper (writable) layer. 9p/virtiofs shares don’t work currently, so resort to using a volume for that:
                 {
-                  image = "volumes/nix-store-overlay-gh-runner-org-arntanguy-sandbox.img";
+                  image = "volumes/gh-runner-org-arntanguy-sandbox/nix-store-overlay.img";
                   mountPoint = config.microvm.writableStoreOverlay;
                   size = 20000; # Mb
                 }
+                {
+                  image = "volumes/gh-runner-org-arntanguy-sandbox/ccache-dir-overlay.img";
+                  mountPoint = "/var/cache/ccache"; # Adjust to your desired cacheDir
+                  size = 5000; # Mb; adjust size accordingly
+                }
               ];
-
             };
 
             nix.settings.experimental-features = [
@@ -86,7 +90,7 @@
             users.users.github-runner = {
               isSystemUser = true;
               group = "github-runner";
-              home = "/run/github-runner/gh-runner-org-isri-aist";
+              home = "/run/github-runner/gh-runner-org-arntanguy-sandbox";
               createHome = true;
             };
             users.groups.github-runner = { };
@@ -161,10 +165,17 @@
               # Caveat: The Linux overlay filesystem is very picky about the filesystems that can be the upper (writable) layer. 9p/virtiofs shares don’t work currently, so resort to using a volume for that:
               writableStoreOverlay = "/nix/.rw-store";
               volumes = [
+                # An optional writable layer will be mounted if the path microvm.writableStoreOverlay is set. Make sure that the path is located on a writable filesystem.
+                # Caveat: The Linux overlay filesystem is very picky about the filesystems that can be the upper (writable) layer. 9p/virtiofs shares don’t work currently, so resort to using a volume for that:
                 {
-                  image = "volumes/nix-store-overlay-gh-runner-org-isri-aist.img";
+                  image = "volumes/gh-runner-org-isri-aist-nix-store-overlay.img";
                   mountPoint = config.microvm.writableStoreOverlay;
                   size = 20000; # Mb
+                }
+                {
+                  image = "volumes/gh-runner-org-isri-aist-ccache-dir-overlay.img";
+                  mountPoint = "/var/cache/ccache"; # Adjust to your desired cacheDir
+                  size = 5000; # Mb; adjust size accordingly
                 }
               ];
 
@@ -180,36 +191,6 @@
             ];
 
             nix.settings.extra-sandbox-paths = [ config.programs.ccache.cacheDir ];
-            nixpkgs.overlays = [
-              (self: super: {
-                ccacheWrapper =
-                  builtins.trace "ccache directory: ${config.programs.ccache.ccacheDir}" super.ccacheWrapper.override
-                    {
-                      extraConfig = ''
-                        export CCACHE_COMPRESS=1
-                        export CCACHE_DIR="${config.programs.ccache.cacheDir}"
-                        export CCACHE_UMASK=007
-                        export CCACHE_SLOPPINESS=random_seed
-                        if [ ! -d "$CCACHE_DIR" ]; then
-                          echo "====="
-                          echo "Directory '$CCACHE_DIR' does not exist"
-                          echo "Please create it with:"
-                          echo "  sudo mkdir -m0770 '$CCACHE_DIR'"
-                          echo "  sudo chown root:nixbld '$CCACHE_DIR'"
-                          echo "====="
-                          exit 1
-                        fi
-                        if [ ! -w "$CCACHE_DIR" ]; then
-                          echo "====="
-                          echo "Directory '$CCACHE_DIR' is not accessible for user $(whoami)"
-                          echo "Please verify its access permissions"
-                          echo "====="
-                          exit 1
-                        fi
-                      '';
-                    };
-              })
-            ];
 
             # Explicitly create the system user and group ---
             users.users.github-runner = {
@@ -221,6 +202,38 @@
             users.groups.github-runner = { };
 
             virtualisation.docker.enable = true;
+
+            programs.ccache.enable = true;
+            # nixpkgs.overlays = [
+            #   (self: super: {
+            #     ccacheWrapper =
+            #       builtins.trace "ccache directory: ${config.programs.ccache.ccacheDir}" super.ccacheWrapper.override
+            #         {
+            #           extraConfig = ''
+            #             export CCACHE_COMPRESS=1
+            #             export CCACHE_DIR="${config.programs.ccache.cacheDir}"
+            #             export CCACHE_UMASK=007
+            #             export CCACHE_SLOPPINESS=random_seed
+            #             if [ ! -d "$CCACHE_DIR" ]; then
+            #               echo "====="
+            #               echo "Directory '$CCACHE_DIR' does not exist"
+            #               echo "Please create it with:"
+            #               echo "  sudo mkdir -m0770 '$CCACHE_DIR'"
+            #               echo "  sudo chown root:nixbld '$CCACHE_DIR'"
+            #               echo "====="
+            #               exit 1
+            #             fi
+            #             if [ ! -w "$CCACHE_DIR" ]; then
+            #               echo "====="
+            #               echo "Directory '$CCACHE_DIR' is not accessible for user $(whoami)"
+            #               echo "Please verify its access permissions"
+            #               echo "====="
+            #               exit 1
+            #             fi
+            #           '';
+            #         };
+            #   })
+            # ];
 
             services.getty.autologinUser = "root";
 
