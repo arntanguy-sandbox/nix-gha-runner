@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: ./run-host <organization> [instance-number] [loop=true]
+
+Organizations: arntanguy-sandbox, isri-aist
+Instance number defaults to 1 and must be a positive integer.
+Set loop=true to restart the VM after every exit.
+EOF
+}
+
+if (($# < 1 || $# > 3)); then
+  usage >&2
+  exit 2
+fi
+
+organization=$1
+instance_number=${2:-1}
+loop=${3:-false}
+
+case "$organization" in
+  arntanguy-sandbox | isri-aist) ;;
+  *)
+    printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! $instance_number =~ ^[1-9][0-9]*$ ]]; then
+  printf 'Instance number must be a positive integer: %s\n' "$instance_number" >&2
+  exit 2
+fi
+
+if [[ $loop != true && $loop != false ]]; then
+  printf 'Loop must be true or false: %s\n' "$loop" >&2
+  exit 2
+fi
+
+repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$repository_root"
+host_name=$(hostname --short)
+if [[ ! $host_name =~ ^[[:alnum:]][[:alnum:].-]*$ ]]; then
+  printf 'Host name contains unsupported characters: %s\n' "$host_name" >&2
+  exit 2
+fi
+
+volume_directory="volumes/gh-runner-org-${organization}-${host_name}-${instance_number}"
+mkdir -p "$volume_directory"
+
+runner=$(RUN_HOST_HOSTNAME="$host_name" nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths \
+  --expr "let
+    flake = builtins.getFlake \"path:${repository_root}\";
+  in
+    flake.lib.mkRunner {
+      organization = \"${organization}\";
+      instanceNumber = ${instance_number};
+      hostName = builtins.getEnv \"RUN_HOST_HOSTNAME\";
+    }")
+
+run_vm() {
+  "$runner/bin/microvm-run"
+}
+
+if [[ $loop == false ]]; then
+  exec "$runner/bin/microvm-run"
+fi
+
+while true; do
+  set +e
+  run_vm
+  status=$?
+  set -e
+  printf 'VM exited with status %d; restarting.\n' "$status" >&2
+done

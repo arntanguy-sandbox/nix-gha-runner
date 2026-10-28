@@ -3,16 +3,18 @@
 ## Build, test, and run commands
 
 - `nix flake check` is the main validation entry point for this repository.
-- `nix build .#microvmConfigurations.gh-runner-org-isri-aist.config.system.build.toplevel` builds the NixOS system closure for the runner VM.
-- `nix run .#gh-runner-org-isri-aist` starts the MicroVM through the flake app wrapper.
-- There is no separate lint target or standalone unit-test suite in the flake today, so there is also no single-test command. For narrower validation, build or evaluate the specific flake attribute you changed.
+- `nix build .#microvmConfigurations.gh-runner-org-<org_name>.config.system.build.toplevel` builds the NixOS system closure for the runner VM. For example
+  - `nix build .#microvmConfigurations.gh-runner-org-isri-aist.config.system.build.toplevel` builds the NixOS system closure for the runner VM.
+- `nix run .#gh-runner-org-<org_name>` starts the MicroVM through the flake app wrapper. For example:
+  - `nix run .#gh-runner-org-isri-aist` starts the MicroVM through the flake app wrapper. For example:
+- Code formatting is done with `nix fmt`. Always run it after finishing code changes.
 
 ## High-level architecture
 
-- `flake.nix` is the entire product surface: it defines one NixOS MicroVM configuration, `microvmConfigurations.gh-runner-org-isri-aist`, and one matching app, `apps.x86_64-linux.gh-runner-org-isri-aist`, that launches it.
+- `flake.nix` is the entire product surface: it defines NixOS MicroVM configurations for github runners (multiple orgs and repos), `microvmConfigurations.gh-runner-org-<org_name>`, and matching app, `apps.x86_64-linux.gh-runner-org-<org_name>`, that launches it.
 - The VM is assembled by combining `microvm.nixosModules.microvm`, `sops-nix.nixosModules.sops`, and a single inline module that contains all repo-specific behavior.
 - Secret handling spans multiple files: `.sops.yaml` defines the age recipient policy, `secrets/secrets.yaml` stores encrypted values, and the VM mounts the host age key read-only through `virtiofs` so `sops-nix` can decrypt `isri-aist/github_token` inside the guest.
-- The guest exposes one org-level GitHub Actions runner via `services.github-runners.gh-runner-org-isri-aist`. It is intentionally `ephemeral = true`, so the VM is meant for one job at a time instead of a long-lived shared runner.
+- The guest exposes one org-level GitHub Actions runner via `services.github-runners.gh-runner-org-<org_name>`. It is intentionally `ephemeral = true`, so the VM is meant for one job at a time instead of a long-lived shared runner.
 - VM shutdown is coupled to runner shutdown: `ExecStopPost = poweroff` on the runner service means the guest powers itself off when the runner exits.
 - The flake app does not reimplement runner wiring manually. It derives `config.microvm.declaredRunner` from the evaluated VM config, removes any stale `/tmp/sops-key.sock`, adds `virtiofsd` to `PATH`, and then execs `microvm-run`.
 
