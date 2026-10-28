@@ -191,6 +191,12 @@ in
       description = "Command run after the GitHub runner service stops.";
     };
 
+    forwardRunnerLogsToConsole = mkOption {
+      type = types.bool;
+      default = true;
+      description = "Mirror GitHub runner service output to the MicroVM console.";
+    };
+
     systemStateVersion = mkOption {
       type = types.str;
       default = "26.04";
@@ -290,7 +296,13 @@ in
 
     systemd.services."github-runner-${runnerName}" = {
       path = [ pkgs.systemd ];
-      serviceConfig.ExecStopPost = cfg.shutdownCommand;
+      serviceConfig = {
+        ExecStopPost = cfg.shutdownCommand;
+      }
+      // lib.optionalAttrs cfg.forwardRunnerLogsToConsole {
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+      };
     };
 
     system.stateVersion = cfg.systemStateVersion;

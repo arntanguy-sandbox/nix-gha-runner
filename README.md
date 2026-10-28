@@ -39,6 +39,11 @@ $ ./run-gh-action-microvm --list
 
 The table includes each VM's organization, host, instance, supervisor PID, active VM
 PID, lifecycle state, and log path. It cleans stale PID state while preserving logs.
+`microvm.log` also includes the GitHub runner service's live output, including job
+logs, because that service writes to both the journal and the guest console. This
+output remains in the host-side log after the VM exits. Do not print credentials in
+workflow output. Callers using `lib.mkRunnerConfiguration` can disable this behavior
+with `services.nixGhaRunner.forwardRunnerLogsToConsole = false`.
 
 Gracefully drain one or more managed instances with:
 
