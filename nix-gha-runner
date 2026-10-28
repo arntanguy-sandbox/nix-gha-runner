@@ -3,10 +3,10 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]
-       ./run-gh-action-microvm --stop <organization> [instance-number-or-range]
-       ./run-gh-action-microvm --kill <organization> [instance-number-or-range]
-       ./run-gh-action-microvm --list
+Usage: ./nix-gha-runner [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]
+       ./nix-gha-runner --stop <organization> [instance-number-or-range]
+       ./nix-gha-runner --kill <organization> [instance-number-or-range]
+       ./nix-gha-runner --list
 
 Start detached ephemeral GitHub Actions runners in NixOS MicroVMs.
 
@@ -458,7 +458,7 @@ for instance_number in "${instance_numbers[@]}"; do
   ssh_port=$(ssh_port_for_instance "$instance_number") || cleanup_launches
 
   RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY="$ssh_public_key" \
-    nohup "$repository_root/run-gh-action-microvm" \
+    nohup "$repository_root/nix-gha-runner" \
       --internal-run-instance "$organization" "$instance_number" "$loop" "$host_name" "$ssh_port" "$volume_directory" \
       >"$log_file" 2>&1 < /dev/null &
   launched_pid=$!

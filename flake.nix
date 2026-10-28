@@ -89,12 +89,12 @@
             pkgs.virtiofsd
           ];
           text = ''
-            if [[ ! -x "$PWD/run-gh-action-microvm" ]]; then
+            if [[ ! -x "$PWD/nix-gha-runner" ]]; then
               printf '%s\n' "Run this command from the nix-gha-runner checkout." >&2
               exit 2
             fi
 
-            exec "$PWD/run-gh-action-microvm" ${nixpkgs.lib.escapeShellArg organization} "$@"
+            exec "$PWD/nix-gha-runner" ${nixpkgs.lib.escapeShellArg organization} "$@"
           '';
         };
     in

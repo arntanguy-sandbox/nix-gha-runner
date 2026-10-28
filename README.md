@@ -11,19 +11,19 @@ This repository contains:
 - Add your `age.txt` key to `/home/arnaud/.config/sops/age/keys.txt`.
 - Enter the development shell with `nix develop`, or enable it with direnv.
 - Start a runner with
-  `./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]`.
+  `./nix-gha-runner [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]`.
 - Alternatively, from this checkout, run the default instance with
   `nix run .#gh-runner-org-<organization>`.
 
 Supported organizations are `arntanguy-sandbox` and `isri-aist`. The instance number
 defaults to `1`; use a different positive number for concurrent runners of the same
-organization. `run-gh-action-microvm` creates an ephemeral NixOS MicroVM that
+organization. `nix-gha-runner` creates an ephemeral NixOS MicroVM that
 registers a single GitHub Actions runner, completes one job, and powers itself off.
 It includes the invoking host's short hostname and the instance number in the runner
 name, volume paths, network interface ID, and MAC address so each host and local
 instance has separate persistent resources.
 
-Run `./run-gh-action-microvm --help` for the argument contract and lifecycle details.
+Run `./nix-gha-runner --help` for the argument contract and lifecycle details.
 Reuse an instance number to preserve that VM's Nix store and ccache overlays; choose
 a different number for concurrent VMs of the same organization on one host. Use an
 inclusive range such as `1-5` to start multiple instances concurrently.
@@ -34,7 +34,7 @@ supervisor PID is stored in `microvm.pid`. The active VM PID is recorded separat
 in `microvm.vm.pid`. List all active managed instances with:
 
 ```console
-$ ./run-gh-action-microvm --list
+$ ./nix-gha-runner --list
 ```
 
 The table includes each VM's organization, host, instance, supervisor PID, active VM
@@ -48,7 +48,7 @@ with `services.nixGhaRunner.forwardRunnerLogsToConsole = false`.
 Gracefully drain one or more managed instances with:
 
 ```console
-$ ./run-gh-action-microvm --stop isri-aist 1-5
+$ ./nix-gha-runner --stop isri-aist 1-5
 ```
 
 `--stop` waits for the current GitHub Actions job to finish, then prevents loop mode
@@ -56,7 +56,7 @@ from starting a replacement VM. It only manages VMs started by the current launc
 and preserves their logs. To terminate immediately instead, use:
 
 ```console
-$ ./run-gh-action-microvm --kill isri-aist 1-5
+$ ./nix-gha-runner --kill isri-aist 1-5
 ```
 
 `--kill` immediately terminates the recorded VM and supervisor, then removes stale
@@ -66,7 +66,7 @@ SSH access is disabled by default. To enable it, pass a file containing one Open
 public key:
 
 ```console
-$ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1-5
+$ ./nix-gha-runner --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1-5
 ```
 
 The key authorizes `root` in the guest. The launcher prints a connection command for
@@ -82,13 +82,13 @@ For example:
 
 ```console
 $ nix develop
-$ ./run-gh-action-microvm isri-aist 2
-$ ./run-gh-action-microvm isri-aist 1-5
-$ ./run-gh-action-microvm arntanguy-sandbox 1 true
-$ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1
-$ ./run-gh-action-microvm --list
-$ ./run-gh-action-microvm --stop isri-aist 1-5
-$ ./run-gh-action-microvm --kill isri-aist 1-5
+$ ./nix-gha-runner isri-aist 2
+$ ./nix-gha-runner isri-aist 1-5
+$ ./nix-gha-runner arntanguy-sandbox 1 true
+$ ./nix-gha-runner --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1
+$ ./nix-gha-runner --list
+$ ./nix-gha-runner --stop isri-aist 1-5
+$ ./nix-gha-runner --kill isri-aist 1-5
 $ nix run .#gh-runner-org-isri-aist
 $ nix run .#gh-runner-org-arntanguy-sandbox -- 1-5 true
 ```
@@ -98,15 +98,15 @@ exit, including failures. For a range, it applies to each detached supervisor
 independently. Each runner remains ephemeral: after it completes a GitHub Actions
 job, the guest powers itself off and the loop, when enabled, starts a new guest.
 
-The flake outputs delegate to `run-gh-action-microvm` in the current checkout so
+The flake outputs delegate to `nix-gha-runner` in the current checkout so
 they retain the invoking host's hostname in runner and volume names. Run them from
-the repository root; use `./run-gh-action-microvm` for an explicit path.
+the repository root; use `./nix-gha-runner` for an explicit path.
 
 The flake exposes `lib.mkRunner` and `lib.mkRunnerConfiguration` for callers that
 need custom settings. Both take `organization` and optional `instanceNumber`;
 they also accept an optional `hostName`, which defaults to `local`.
 `mkRunnerConfiguration` additionally accepts `extraModules` to override any generic
-`services.nixGhaRunner` option. `run-gh-action-microvm` evaluates the local checkout with
+`services.nixGhaRunner` option. `nix-gha-runner` evaluates the local checkout with
 `--impure` because this Nix version cannot apply arguments to a function-valued flake
 output; the runner configuration itself has no environment-dependent settings.
 
