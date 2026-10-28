@@ -69,6 +69,20 @@
           ]
           ++ extraModules;
         };
+
+      mkRunnerLauncher =
+        organization:
+        pkgs.writeShellApplication {
+          name = "gh-runner-org-${organization}";
+          text = ''
+            if [[ ! -x "$PWD/run-host" ]]; then
+              printf '%s\n' "Run this command from the nix-gha-runner checkout." >&2
+              exit 2
+            fi
+
+            exec "$PWD/run-host" ${nixpkgs.lib.escapeShellArg organization} "$@"
+          '';
+        };
     in
     {
       lib = {
@@ -77,9 +91,15 @@
         mkRunner = args: (mkRunnerConfiguration args).config.microvm.declaredRunner;
       };
 
+      packages.${system} = builtins.listToAttrs (
+        map (organization: {
+          name = "gh-runner-org-${organization}";
+          value = mkRunnerLauncher organization;
+        }) (builtins.attrNames organizationModules)
+      );
+
       devShells.${system}.default = pkgs.mkShell {
         packages = [
-          pkgs.nix
           pkgs.virtiofsd
         ];
       };

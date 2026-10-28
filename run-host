@@ -52,7 +52,7 @@ mkdir -p "$volume_directory"
 
 runner=$(RUN_HOST_HOSTNAME="$host_name" nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths \
   --expr "let
-    flake = builtins.getFlake \"path:${repository_root}\";
+    flake = builtins.getFlake \"git+file://${repository_root}\";
   in
     flake.lib.mkRunner {
       organization = \"${organization}\";

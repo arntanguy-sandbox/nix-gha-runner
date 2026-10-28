@@ -11,6 +11,8 @@ This repository contains:
 - Add your `age.txt` key to `/home/arnaud/.config/sops/age/keys.txt`.
 - Enter the development shell with `nix develop`, or enable it with direnv.
 - Start a runner with `./run-host <organization> [instance-number] [loop=true]`.
+- Alternatively, from this checkout, run the default instance with
+  `nix run .#gh-runner-org-<organization>`.
 
 Supported organizations are `arntanguy-sandbox` and `isri-aist`. The instance number
 defaults to `1`; use a different positive number for concurrent runners of the same
@@ -24,12 +26,18 @@ For example:
 $ nix develop
 $ ./run-host isri-aist 2
 $ ./run-host arntanguy-sandbox 1 true
+$ nix run .#gh-runner-org-isri-aist
+$ nix run .#gh-runner-org-arntanguy-sandbox -- 2 true
 ```
 
 The optional `loop=true` argument restarts the same VM configuration after every VM
 exit, including failures. Without it, `run-host` exits with the VM's exit status.
 Each runner remains ephemeral: after it completes a GitHub Actions job, the guest
 powers itself off and the loop, when enabled, starts a new guest.
+
+The flake outputs delegate to `run-host` in the current checkout so they retain the
+invoking host's hostname in runner and volume names. Run them from the repository
+root; use `./run-host` for an explicit path.
 
 The flake exposes `lib.mkRunner` and `lib.mkRunnerConfiguration` for callers that
 need custom settings. Both take `organization` and optional `instanceNumber`;
