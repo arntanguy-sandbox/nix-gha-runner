@@ -132,7 +132,7 @@ else
     loop=${positional_arguments[2]:-false}
 
     case "$organization" in
-      arntanguy-sandbox | isri-aist) ;;
+      arntanguy-sandbox | isri-aist | jrl-umi3218) ;;
       *)
         printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
         usage >&2
@@ -279,6 +279,7 @@ ssh_port_for_instance() {
   case "$organization" in
     arntanguy-sandbox) port_base=22000 ;;
     isri-aist) port_base=32000 ;;
+    jrl-umi3218) port_base=42000 ;;
   esac
   printf '%d\n' "$((port_base + instance_number))"
 }
@@ -361,7 +362,7 @@ list_managed_instances() {
   while IFS= read -r -d '' state_directory; do
     state_name=${state_directory##*/}
     organization=
-    for candidate in arntanguy-sandbox isri-aist; do
+    for candidate in arntanguy-sandbox isri-aist jrl-umi3218; do
       prefix="gh-runner-org-${candidate}-"
       if [[ $state_name == "$prefix"* ]]; then
         organization=$candidate

@@ -36,6 +36,7 @@
       organizationModules = {
         arntanguy-sandbox = ./modules/orgs/arntanguy-sandbox.nix;
         isri-aist = ./modules/orgs/isri-aist.nix;
+        jrl-umi3218 = ./modules/orgs/jrl-umi3218.nix;
       };
 
       mkRunnerConfiguration =
