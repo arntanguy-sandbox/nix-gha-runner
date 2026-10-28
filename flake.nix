@@ -75,12 +75,12 @@
         pkgs.writeShellApplication {
           name = "gh-runner-org-${organization}";
           text = ''
-            if [[ ! -x "$PWD/run-host" ]]; then
+            if [[ ! -x "$PWD/run-gh-action-microvm" ]]; then
               printf '%s\n' "Run this command from the nix-gha-runner checkout." >&2
               exit 2
             fi
 
-            exec "$PWD/run-host" ${nixpkgs.lib.escapeShellArg organization} "$@"
+            exec "$PWD/run-gh-action-microvm" ${nixpkgs.lib.escapeShellArg organization} "$@"
           '';
         };
     in
