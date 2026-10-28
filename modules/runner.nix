@@ -41,6 +41,18 @@ in
       description = "Host identity included in the generated runner name.";
     };
 
+    sshPublicKey = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "Public key authorized for root SSH access to the guest.";
+    };
+
+    sshHostPort = mkOption {
+      type = types.nullOr types.port;
+      default = null;
+      description = "Loopback host port forwarded to guest SSH.";
+    };
+
     runnerName = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -187,6 +199,13 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = (cfg.sshPublicKey == null) == (cfg.sshHostPort == null);
+        message = "services.nixGhaRunner.sshPublicKey and sshHostPort must be configured together.";
+      }
+    ];
+
     microvm = {
       inherit (cfg) hypervisor;
       mem = cfg.memory;
@@ -199,6 +218,15 @@ in
         }
       ];
       inherit (cfg) writableStoreOverlay;
+      forwardPorts = lib.optional (cfg.sshHostPort != null) {
+        from = "host";
+        proto = "tcp";
+        host = {
+          address = "127.0.0.1";
+          port = cfg.sshHostPort;
+        };
+        guest.port = 22;
+      };
       volumes = [
         {
           image = "${volumeDirectory}/nix-store-overlay.img";
@@ -236,6 +264,14 @@ in
     virtualisation.docker.enable = true;
     programs.ccache.enable = cfg.enableCcache;
     services.getty.autologinUser = "root";
+    services.openssh = lib.mkIf (cfg.sshPublicKey != null) {
+      enable = true;
+      settings.PermitRootLogin = "prohibit-password";
+    };
+    users.users.root.openssh.authorizedKeys.keys = lib.optional (
+      cfg.sshPublicKey != null
+    ) cfg.sshPublicKey;
+    networking.firewall.allowedTCPPorts = lib.optional (cfg.sshHostPort != null) 22;
 
     services.github-runners.${runnerName} = {
       enable = true;

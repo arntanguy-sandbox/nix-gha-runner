@@ -3,92 +3,280 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: ./run-gh-action-microvm <organization> [instance-number] [loop=true]
+Usage: ./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]
 
-Start an ephemeral GitHub Actions runner in a NixOS MicroVM.
+Start detached ephemeral GitHub Actions runners in NixOS MicroVMs.
 
 Arguments:
-  organization       GitHub organization: arntanguy-sandbox or isri-aist
-  instance-number   Positive per-host VM number; defaults to 1
-  loop=true          Restart a fresh VM after every VM exit
+  organization               GitHub organization: arntanguy-sandbox or isri-aist
+  instance-number-or-range   Positive VM number or inclusive range such as 1-5;
+                              defaults to 1
+  loop=true                  Restart a fresh VM after every VM exit
+
+Options:
+  --ssh-public-key <path>    Authorize the public key in <path> for root SSH access.
+                              This enables a loopback-only SSH port for each VM.
+  --help                      Show this help text.
+
+Each instance starts in the background. Its console log and supervisor PID are stored
+in volumes/gh-runner-org-<org>-<host>-<instance>/ as microvm.log and microvm.pid.
+Use `kill "$(cat <path>/microvm.pid)"` to stop a running supervisor.
 
 The runner name and persistent volume directory include the organization, the
-invoking host's short hostname, and the instance number. Reuse an instance number
-to reuse its Nix store and ccache overlays; use a different number for concurrent
-VMs of the same organization on one host.
-
-The guest registers an ephemeral runner, processes one GitHub Actions job, then
-powers itself off. Without loop=true, this command exits with the VM's exit status.
-With loop=true, it continually starts fresh VMs after every exit, including failures.
+invoking host's short hostname, and the instance number. Ranges launch all selected
+instances concurrently. With loop=true, each instance independently starts a fresh
+VM after every exit.
 EOF
 }
 
-if (($# == 1)) && [[ $1 == --help ]]; then
-  usage
-  exit 0
+internal_mode=false
+if [[ ${1:-} == --internal-run-instance ]]; then
+  internal_mode=true
+  shift
 fi
 
-if (($# < 1 || $# > 3)); then
-  usage >&2
-  exit 2
-fi
+if [[ $internal_mode == true ]]; then
+  if (($# != 6)); then
+    printf 'Invalid internal runner invocation.\n' >&2
+    exit 2
+  fi
 
-organization=$1
-instance_number=${2:-1}
-loop=${3:-false}
+  organization=$1
+  instance_number=$2
+  loop=$3
+  host_name=$4
+  ssh_host_port=$5
+  pid_file=$6
+  ssh_public_key=${RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY:-}
+  repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  cd "$repository_root"
+else
+  ssh_public_key_path=
+  declare -a positional_arguments=()
 
-case "$organization" in
-  arntanguy-sandbox | isri-aist) ;;
-  *)
-    printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
+  while (($# > 0)); do
+    case $1 in
+      --help)
+        usage
+        exit 0
+        ;;
+      --ssh-public-key)
+        if (($# < 2)); then
+          printf 'Missing path after --ssh-public-key.\n' >&2
+          exit 2
+        fi
+        if [[ -n $ssh_public_key_path ]]; then
+          printf '%s\n' '--ssh-public-key may only be specified once.' >&2
+          exit 2
+        fi
+        ssh_public_key_path=$2
+        shift 2
+        ;;
+      --)
+        shift
+        positional_arguments+=("$@")
+        break
+        ;;
+      -*)
+        printf 'Unknown option: %s\n' "$1" >&2
+        exit 2
+        ;;
+      *)
+        positional_arguments+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ((${#positional_arguments[@]} < 1 || ${#positional_arguments[@]} > 3)); then
     usage >&2
     exit 2
-    ;;
-esac
+  fi
 
-if [[ ! $instance_number =~ ^[1-9][0-9]*$ ]]; then
-  printf 'Instance number must be a positive integer: %s\n' "$instance_number" >&2
-  exit 2
+  organization=${positional_arguments[0]}
+  instance_specification=${positional_arguments[1]:-1}
+  loop=${positional_arguments[2]:-false}
+
+  case "$organization" in
+    arntanguy-sandbox | isri-aist) ;;
+    *)
+      printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ $loop != true && $loop != false ]]; then
+    printf 'Loop must be true or false: %s\n' "$loop" >&2
+    exit 2
+  fi
+
+  declare -a instance_numbers
+  if [[ $instance_specification =~ ^[1-9][0-9]*$ ]]; then
+    instance_numbers=("$instance_specification")
+  elif [[ $instance_specification =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]; then
+    range_start=${BASH_REMATCH[1]}
+    range_end=${BASH_REMATCH[2]}
+    if ((range_start > range_end)); then
+      printf 'Instance range start must not exceed its end: %s\n' "$instance_specification" >&2
+      exit 2
+    fi
+
+    for ((instance_number = range_start; instance_number <= range_end; instance_number++)); do
+      instance_numbers+=("$instance_number")
+    done
+  else
+    printf 'Instance number must be a positive integer or inclusive range: %s\n' "$instance_specification" >&2
+    exit 2
+  fi
+
+  ssh_public_key=
+  if [[ -n $ssh_public_key_path ]]; then
+    if [[ ! -f $ssh_public_key_path || ! -r $ssh_public_key_path ]]; then
+      printf 'SSH public-key file is not readable: %s\n' "$ssh_public_key_path" >&2
+      exit 2
+    fi
+
+    ssh_public_key=$(<"$ssh_public_key_path")
+    if [[ -z ${ssh_public_key//[[:space:]]/} || $ssh_public_key == *$'\n'* ]]; then
+      printf 'SSH public-key file must contain exactly one non-empty key: %s\n' "$ssh_public_key_path" >&2
+      exit 2
+    fi
+  fi
+
+  repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  cd "$repository_root"
+  host_name=$(hostname --short)
+  if [[ ! $host_name =~ ^[[:alnum:]][[:alnum:].-]*$ ]]; then
+    printf 'Host name contains unsupported characters: %s\n' "$host_name" >&2
+    exit 2
+  fi
 fi
 
-if [[ $loop != true && $loop != false ]]; then
-  printf 'Loop must be true or false: %s\n' "$loop" >&2
-  exit 2
-fi
+run_instance() {
+  local instance_number=$1
+  local ssh_port=$2
+  local runner
 
-repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-cd "$repository_root"
-host_name=$(hostname --short)
-if [[ ! $host_name =~ ^[[:alnum:]][[:alnum:].-]*$ ]]; then
-  printf 'Host name contains unsupported characters: %s\n' "$host_name" >&2
-  exit 2
-fi
+  runner=$(RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY="$ssh_public_key" RUN_HOST_HOSTNAME="$host_name" \
+    nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths \
+      --expr "let
+        flake = builtins.getFlake \"git+file://${repository_root}\";
+      in
+        flake.lib.mkRunner {
+          organization = \"${organization}\";
+          instanceNumber = ${instance_number};
+          hostName = builtins.getEnv \"RUN_HOST_HOSTNAME\";
+          sshPublicKey =
+            let key = builtins.getEnv \"RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY\";
+            in if key == \"\" then null else key;
+          sshHostPort = ${ssh_port:-null};
+        }")
 
-volume_directory="volumes/gh-runner-org-${organization}-${host_name}-${instance_number}"
-mkdir -p "$volume_directory"
+  run_vm() {
+    "$runner/bin/microvm-run" &
+    active_vm_pid=$!
+    wait "$active_vm_pid"
+    local status=$?
+    active_vm_pid=
+    return "$status"
+  }
 
-runner=$(RUN_HOST_HOSTNAME="$host_name" nix --extra-experimental-features 'nix-command flakes' build --impure --no-link --print-out-paths \
-  --expr "let
-    flake = builtins.getFlake \"git+file://${repository_root}\";
-  in
-    flake.lib.mkRunner {
-      organization = \"${organization}\";
-      instanceNumber = ${instance_number};
-      hostName = builtins.getEnv \"RUN_HOST_HOSTNAME\";
-    }")
+  if [[ $loop == false ]]; then
+    run_vm
+    return
+  fi
 
-run_vm() {
-  "$runner/bin/microvm-run"
+  while true; do
+    if run_vm; then
+      status=0
+    else
+      status=$?
+    fi
+    printf 'VM instance %s exited with status %d; restarting.\n' "$instance_number" "$status" >&2
+  done
 }
 
-if [[ $loop == false ]]; then
-  exec "$runner/bin/microvm-run"
+if [[ $internal_mode == true ]]; then
+  active_vm_pid=
+  stop_active_vm() {
+    if [[ -n $active_vm_pid ]]; then
+      kill -TERM "$active_vm_pid" 2>/dev/null || true
+      wait "$active_vm_pid" 2>/dev/null || true
+    fi
+  }
+  remove_pid_file() {
+    rm -f -- "$pid_file"
+  }
+  trap 'stop_active_vm; exit 143' INT TERM
+  trap remove_pid_file EXIT
+  run_instance "$instance_number" "$ssh_host_port"
+  exit $?
 fi
 
-while true; do
-  set +e
-  run_vm
-  status=$?
-  set -e
-  printf 'VM exited with status %d; restarting.\n' "$status" >&2
+ssh_port_for_instance() {
+  local instance_number=$1
+  local port_base
+
+  if [[ -z $ssh_public_key ]]; then
+    return
+  fi
+  if ((instance_number > 9999)); then
+    printf 'SSH-enabled instance numbers must not exceed 9999: %s\n' "$instance_number" >&2
+    return 1
+  fi
+
+  case "$organization" in
+    arntanguy-sandbox) port_base=22000 ;;
+    isri-aist) port_base=32000 ;;
+  esac
+  printf '%d\n' "$((port_base + instance_number))"
+}
+
+declare -a launched_pids=()
+cleanup_launches() {
+  local launched_pid
+
+  trap - INT TERM
+  for launched_pid in "${launched_pids[@]}"; do
+    kill -TERM "$launched_pid" 2>/dev/null || true
+  done
+  exit 130
+}
+
+trap cleanup_launches INT TERM
+
+for instance_number in "${instance_numbers[@]}"; do
+  volume_directory="volumes/gh-runner-org-${organization}-${host_name}-${instance_number}"
+  log_file="${volume_directory}/microvm.log"
+  pid_file="${volume_directory}/microvm.pid"
+  mkdir -p "$volume_directory"
+
+  if [[ -f $pid_file ]]; then
+    existing_pid=$(<"$pid_file")
+    if [[ $existing_pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+      printf 'VM instance %s is already running (PID %s).\n' "$instance_number" "$existing_pid" >&2
+      cleanup_launches
+    fi
+    rm -f -- "$pid_file"
+  fi
+
+  ssh_port=$(ssh_port_for_instance "$instance_number") || cleanup_launches
+
+  RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY="$ssh_public_key" \
+    nohup "$repository_root/run-gh-action-microvm" \
+      --internal-run-instance "$organization" "$instance_number" "$loop" "$host_name" "$ssh_port" "$pid_file" \
+      >"$log_file" 2>&1 < /dev/null &
+  launched_pid=$!
+  launched_pids+=("$launched_pid")
+  printf '%s\n' "$launched_pid" >"$pid_file"
+
+  printf 'Started VM instance %s (PID %s).\n' "$instance_number" "$launched_pid"
+  printf '  Log:  %s\n' "$log_file"
+  printf '  Stop: kill "$(cat %s)"\n' "$pid_file"
+  if [[ -n $ssh_port ]]; then
+    printf '  SSH:  ssh -p %s root@127.0.0.1\n' "$ssh_port"
+  fi
 done
+
+trap - INT TERM

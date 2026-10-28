@@ -6,8 +6,6 @@
 {
   imports = [ inputs.sops-nix.nixosModules.sops ];
 
-  services.sshd.enable = true;
-
   microvm.shares = [
     {
       proto = "9p";

@@ -11,7 +11,7 @@ This repository contains:
 - Add your `age.txt` key to `/home/arnaud/.config/sops/age/keys.txt`.
 - Enter the development shell with `nix develop`, or enable it with direnv.
 - Start a runner with
-  `./run-gh-action-microvm <organization> [instance-number] [loop=true]`.
+  `./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]`.
 - Alternatively, from this checkout, run the default instance with
   `nix run .#gh-runner-org-<organization>`.
 
@@ -25,22 +25,45 @@ instance has separate persistent resources.
 
 Run `./run-gh-action-microvm --help` for the argument contract and lifecycle details.
 Reuse an instance number to preserve that VM's Nix store and ccache overlays; choose
-a different number for concurrent VMs of the same organization on one host.
+a different number for concurrent VMs of the same organization on one host. Use an
+inclusive range such as `1-5` to start multiple instances concurrently.
+
+The command starts every VM in the background. Per-instance output is written to
+`volumes/gh-runner-org-<org>-<host>-<instance>/microvm.log`, and the corresponding
+supervisor PID is stored in `microvm.pid`. Stop an instance with:
+
+```console
+$ kill "$(cat volumes/gh-runner-org-<org>-<host>-<instance>/microvm.pid)"
+```
+
+SSH access is disabled by default. To enable it, pass a file containing one OpenSSH
+public key:
+
+```console
+$ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1-5
+```
+
+The key authorizes `root` in the guest. The launcher prints a connection command for
+each instance and forwards SSH only on `127.0.0.1`. Ports are deterministic:
+`arntanguy-sandbox` uses `22000 + instance` and `isri-aist` uses
+`32000 + instance`, supporting SSH-enabled instance numbers from 1 through 9999.
 
 For example:
 
 ```console
 $ nix develop
 $ ./run-gh-action-microvm isri-aist 2
+$ ./run-gh-action-microvm isri-aist 1-5
 $ ./run-gh-action-microvm arntanguy-sandbox 1 true
+$ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1
 $ nix run .#gh-runner-org-isri-aist
-$ nix run .#gh-runner-org-arntanguy-sandbox -- 2 true
+$ nix run .#gh-runner-org-arntanguy-sandbox -- 1-5 true
 ```
 
 The optional `loop=true` argument restarts the same VM configuration after every VM
-exit, including failures. Without it, `run-gh-action-microvm` exits with the VM's exit status.
-Each runner remains ephemeral: after it completes a GitHub Actions job, the guest
-powers itself off and the loop, when enabled, starts a new guest.
+exit, including failures. For a range, it applies to each detached supervisor
+independently. Each runner remains ephemeral: after it completes a GitHub Actions
+job, the guest powers itself off and the loop, when enabled, starts a new guest.
 
 The flake outputs delegate to `run-gh-action-microvm` in the current checkout so
 they retain the invoking host's hostname in runner and volume names. Run them from

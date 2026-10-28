@@ -43,6 +43,8 @@
           organization,
           instanceNumber ? 1,
           hostName ? "local",
+          sshPublicKey ? null,
+          sshHostPort ? null,
           extraModules ? [ ],
         }:
         let
@@ -63,7 +65,12 @@
             organizationModule
             {
               services.nixGhaRunner = {
-                inherit instanceNumber hostName;
+                inherit
+                  instanceNumber
+                  hostName
+                  sshPublicKey
+                  sshHostPort
+                  ;
               };
             }
           ]
@@ -74,6 +81,13 @@
         organization:
         pkgs.writeShellApplication {
           name = "gh-runner-org-${organization}";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.inetutils
+            pkgs.nix
+            pkgs.openssh
+            pkgs.virtiofsd
+          ];
           text = ''
             if [[ ! -x "$PWD/run-gh-action-microvm" ]]; then
               printf '%s\n' "Run this command from the nix-gha-runner checkout." >&2
@@ -100,6 +114,9 @@
 
       devShells.${system}.default = pkgs.mkShell {
         packages = [
+          pkgs.coreutils
+          pkgs.inetutils
+          pkgs.openssh
           pkgs.virtiofsd
         ];
       };
