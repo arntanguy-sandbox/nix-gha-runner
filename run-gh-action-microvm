@@ -6,6 +6,7 @@ usage() {
 Usage: ./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]
        ./run-gh-action-microvm --stop <organization> [instance-number-or-range]
        ./run-gh-action-microvm --kill <organization> [instance-number-or-range]
+       ./run-gh-action-microvm --list
 
 Start detached ephemeral GitHub Actions runners in NixOS MicroVMs.
 
@@ -20,12 +21,14 @@ Options:
                               This enables a loopback-only SSH port for each VM.
   --stop                      Let active jobs finish, then stop managed VM supervisors.
   --kill                      Immediately terminate managed VMs and supervisors.
+  --list                      Show all running managed VM supervisors.
   --help                      Show this help text.
 
 Each instance starts in the background. Its console log and supervisor PID are stored
 in volumes/gh-runner-org-<org>-<host>-<instance>/ as microvm.log and microvm.pid;
 the active VM PID is microvm.vm.pid. Use --stop for graceful drain or --kill for
-immediate termination.
+immediate termination. Use --list to display all active managed instances and their
+logs.
 
 The runner name and persistent volume directory include the organization, the
 invoking host's short hostname, and the instance number. Ranges launch all selected
@@ -81,7 +84,7 @@ else
         ssh_public_key_path=$2
         shift 2
         ;;
-      --stop | --kill)
+      --stop | --kill | --list)
         if [[ $action != launch ]]; then
           printf 'Only one management action may be specified.\n' >&2
           exit 2
@@ -105,59 +108,65 @@ else
     esac
   done
 
+  minimum_arguments=1
   maximum_arguments=3
-  if [[ $action != launch ]]; then
+  if [[ $action == list ]]; then
+    minimum_arguments=0
+    maximum_arguments=0
+  elif [[ $action != launch ]]; then
     maximum_arguments=2
   fi
-  if ((${#positional_arguments[@]} < 1 || ${#positional_arguments[@]} > maximum_arguments)); then
+  if ((${#positional_arguments[@]} < minimum_arguments || ${#positional_arguments[@]} > maximum_arguments)); then
     usage >&2
     exit 2
   fi
-
-  organization=${positional_arguments[0]}
-  instance_specification=${positional_arguments[1]:-1}
-  loop=${positional_arguments[2]:-false}
 
   if [[ $action != launch && -n $ssh_public_key_path ]]; then
     printf '%s\n' "--ssh-public-key cannot be used with --${action}." >&2
     exit 2
   fi
 
-  case "$organization" in
-    arntanguy-sandbox | isri-aist) ;;
-    *)
-      printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
+  if [[ $action != list ]]; then
+    organization=${positional_arguments[0]}
+    instance_specification=${positional_arguments[1]:-1}
+    loop=${positional_arguments[2]:-false}
 
-  if [[ $loop != true && $loop != false ]]; then
-    printf 'Loop must be true or false: %s\n' "$loop" >&2
-    exit 2
-  fi
+    case "$organization" in
+      arntanguy-sandbox | isri-aist) ;;
+      *)
+        printf 'Unsupported GitHub organization: %s\n' "$organization" >&2
+        usage >&2
+        exit 2
+        ;;
+    esac
 
-  declare -a instance_numbers
-  if [[ $instance_specification =~ ^[1-9][0-9]*$ ]]; then
-    instance_numbers=("$instance_specification")
-  elif [[ $instance_specification =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]; then
-    range_start=${BASH_REMATCH[1]}
-    range_end=${BASH_REMATCH[2]}
-    if ((range_start > range_end)); then
-      printf 'Instance range start must not exceed its end: %s\n' "$instance_specification" >&2
+    if [[ $loop != true && $loop != false ]]; then
+      printf 'Loop must be true or false: %s\n' "$loop" >&2
       exit 2
     fi
 
-    for ((instance_number = range_start; instance_number <= range_end; instance_number++)); do
-      instance_numbers+=("$instance_number")
-    done
-  else
-    printf 'Instance number must be a positive integer or inclusive range: %s\n' "$instance_specification" >&2
-    exit 2
+    declare -a instance_numbers
+    if [[ $instance_specification =~ ^[1-9][0-9]*$ ]]; then
+      instance_numbers=("$instance_specification")
+    elif [[ $instance_specification =~ ^([1-9][0-9]*)-([1-9][0-9]*)$ ]]; then
+      range_start=${BASH_REMATCH[1]}
+      range_end=${BASH_REMATCH[2]}
+      if ((range_start > range_end)); then
+        printf 'Instance range start must not exceed its end: %s\n' "$instance_specification" >&2
+        exit 2
+      fi
+
+      for ((instance_number = range_start; instance_number <= range_end; instance_number++)); do
+        instance_numbers+=("$instance_number")
+      done
+    else
+      printf 'Instance number must be a positive integer or inclusive range: %s\n' "$instance_specification" >&2
+      exit 2
+    fi
   fi
 
   ssh_public_key=
-  if [[ -n $ssh_public_key_path ]]; then
+  if [[ $action == launch && -n $ssh_public_key_path ]]; then
     if [[ ! -f $ssh_public_key_path || ! -r $ssh_public_key_path ]]; then
       printf 'SSH public-key file is not readable: %s\n' "$ssh_public_key_path" >&2
       exit 2
@@ -172,10 +181,12 @@ else
 
   repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
   cd "$repository_root"
-  host_name=$(hostname --short)
-  if [[ ! $host_name =~ ^[[:alnum:]][[:alnum:].-]*$ ]]; then
-    printf 'Host name contains unsupported characters: %s\n' "$host_name" >&2
-    exit 2
+  if [[ $action != list ]]; then
+    host_name=$(hostname --short)
+    if [[ ! $host_name =~ ^[[:alnum:]][[:alnum:].-]*$ ]]; then
+      printf 'Host name contains unsupported characters: %s\n' "$host_name" >&2
+      exit 2
+    fi
   fi
 fi
 
@@ -321,6 +332,92 @@ manage_instance() {
   rm -f -- "$pid_file" "$vm_pid_file" "$stop_file"
   printf 'VM instance %s killed.\n' "$instance_number"
 }
+
+list_managed_instances() {
+  local state_directory
+  local state_name
+  local organization
+  local candidate
+  local prefix
+  local instance_metadata
+  local host_name
+  local instance_number
+  local pid_file
+  local vm_pid_file
+  local stop_file
+  local supervisor_pid
+  local vm_pid
+  local status
+  local found=false
+
+  if [[ ! -d volumes ]]; then
+    printf 'No managed VMs are running.\n'
+    return
+  fi
+
+  printf '%-20s %-24s %-8s %-10s %-10s %-9s %s\n' \
+    'ORGANIZATION' 'HOST' 'INSTANCE' 'SUPERVISOR' 'VM' 'STATUS' 'LOG'
+
+  while IFS= read -r -d '' state_directory; do
+    state_name=${state_directory##*/}
+    organization=
+    for candidate in arntanguy-sandbox isri-aist; do
+      prefix="gh-runner-org-${candidate}-"
+      if [[ $state_name == "$prefix"* ]]; then
+        organization=$candidate
+        instance_metadata=${state_name#"$prefix"}
+        break
+      fi
+    done
+
+    if [[ -z $organization || ! $instance_metadata =~ ^(.+)-([1-9][0-9]*)$ ]]; then
+      continue
+    fi
+    host_name=${BASH_REMATCH[1]}
+    instance_number=${BASH_REMATCH[2]}
+    pid_file="${state_directory}/microvm.pid"
+    vm_pid_file="${state_directory}/microvm.vm.pid"
+    stop_file="${state_directory}/microvm.stop"
+
+    if [[ ! -f $pid_file ]]; then
+      continue
+    fi
+    supervisor_pid=$(<"$pid_file")
+    if [[ ! $supervisor_pid =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$supervisor_pid" 2>/dev/null; then
+      rm -f -- "$pid_file" "$vm_pid_file" "$stop_file"
+      continue
+    fi
+
+    vm_pid=-
+    status=STARTING
+    if [[ -f $vm_pid_file ]]; then
+      vm_pid=$(<"$vm_pid_file")
+      if [[ ! $vm_pid =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$vm_pid" 2>/dev/null; then
+        rm -f -- "$vm_pid_file"
+        vm_pid=-
+      else
+        status=RUNNING
+      fi
+    fi
+    if [[ -f $stop_file ]]; then
+      status=STOPPING
+    fi
+
+    printf '%-20s %-24s %-8s %-10s %-10s %-9s %s\n' \
+      "$organization" "$host_name" "$instance_number" "$supervisor_pid" "$vm_pid" "$status" \
+      "${state_directory}/microvm.log"
+    found=true
+  done < <(find volumes -mindepth 1 -maxdepth 1 -type d -name 'gh-runner-org-*' -print0 | sort -z)
+
+  if [[ $found == false ]]; then
+    printf 'No managed VMs are running.\n'
+  fi
+}
+
+if [[ $action == list ]]; then
+  list_managed_instances
+  exit 0
+fi
 
 if [[ $action != launch ]]; then
   for instance_number in "${instance_numbers[@]}"; do

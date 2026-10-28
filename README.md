@@ -31,7 +31,14 @@ inclusive range such as `1-5` to start multiple instances concurrently.
 The command starts every VM in the background. Per-instance output is written to
 `volumes/gh-runner-org-<org>-<host>-<instance>/microvm.log`, and the corresponding
 supervisor PID is stored in `microvm.pid`. The active VM PID is recorded separately
-in `microvm.vm.pid`.
+in `microvm.vm.pid`. List all active managed instances with:
+
+```console
+$ ./run-gh-action-microvm --list
+```
+
+The table includes each VM's organization, host, instance, supervisor PID, active VM
+PID, lifecycle state, and log path. It cleans stale PID state while preserving logs.
 
 Gracefully drain one or more managed instances with:
 
@@ -74,6 +81,7 @@ $ ./run-gh-action-microvm isri-aist 2
 $ ./run-gh-action-microvm isri-aist 1-5
 $ ./run-gh-action-microvm arntanguy-sandbox 1 true
 $ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1
+$ ./run-gh-action-microvm --list
 $ ./run-gh-action-microvm --stop isri-aist 1-5
 $ ./run-gh-action-microvm --kill isri-aist 1-5
 $ nix run .#gh-runner-org-isri-aist
