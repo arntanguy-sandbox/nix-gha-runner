@@ -30,11 +30,25 @@ inclusive range such as `1-5` to start multiple instances concurrently.
 
 The command starts every VM in the background. Per-instance output is written to
 `volumes/gh-runner-org-<org>-<host>-<instance>/microvm.log`, and the corresponding
-supervisor PID is stored in `microvm.pid`. Stop an instance with:
+supervisor PID is stored in `microvm.pid`. The active VM PID is recorded separately
+in `microvm.vm.pid`.
+
+Gracefully drain one or more managed instances with:
 
 ```console
-$ kill "$(cat volumes/gh-runner-org-<org>-<host>-<instance>/microvm.pid)"
+$ ./run-gh-action-microvm --stop isri-aist 1-5
 ```
+
+`--stop` waits for the current GitHub Actions job to finish, then prevents loop mode
+from starting a replacement VM. It only manages VMs started by the current launcher
+and preserves their logs. To terminate immediately instead, use:
+
+```console
+$ ./run-gh-action-microvm --kill isri-aist 1-5
+```
+
+`--kill` immediately terminates the recorded VM and supervisor, then removes stale
+state files.
 
 SSH access is disabled by default. To enable it, pass a file containing one OpenSSH
 public key:
@@ -47,6 +61,10 @@ The key authorizes `root` in the guest. The launcher prints a connection command
 each instance and forwards SSH only on `127.0.0.1`. Ports are deterministic:
 `arntanguy-sandbox` uses `22000 + instance` and `isri-aist` uses
 `32000 + instance`, supporting SSH-enabled instance numbers from 1 through 9999.
+The printed command disables host-key checking and known-host storage because a new
+guest can generate a different host key on every start. This bypass is limited to
+the loopback VM endpoint; do not reuse those SSH options for remote hosts. A manually
+typed plain SSH command can still report an old-key warning.
 
 For example:
 
@@ -56,6 +74,8 @@ $ ./run-gh-action-microvm isri-aist 2
 $ ./run-gh-action-microvm isri-aist 1-5
 $ ./run-gh-action-microvm arntanguy-sandbox 1 true
 $ ./run-gh-action-microvm --ssh-public-key ~/.ssh/id_ed25519.pub isri-aist 1
+$ ./run-gh-action-microvm --stop isri-aist 1-5
+$ ./run-gh-action-microvm --kill isri-aist 1-5
 $ nix run .#gh-runner-org-isri-aist
 $ nix run .#gh-runner-org-arntanguy-sandbox -- 1-5 true
 ```

@@ -4,6 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage: ./run-gh-action-microvm [--ssh-public-key <path>] <organization> [instance-number-or-range] [loop=true]
+       ./run-gh-action-microvm --stop <organization> [instance-number-or-range]
+       ./run-gh-action-microvm --kill <organization> [instance-number-or-range]
 
 Start detached ephemeral GitHub Actions runners in NixOS MicroVMs.
 
@@ -16,11 +18,14 @@ Arguments:
 Options:
   --ssh-public-key <path>    Authorize the public key in <path> for root SSH access.
                               This enables a loopback-only SSH port for each VM.
+  --stop                      Let active jobs finish, then stop managed VM supervisors.
+  --kill                      Immediately terminate managed VMs and supervisors.
   --help                      Show this help text.
 
 Each instance starts in the background. Its console log and supervisor PID are stored
-in volumes/gh-runner-org-<org>-<host>-<instance>/ as microvm.log and microvm.pid.
-Use `kill "$(cat <path>/microvm.pid)"` to stop a running supervisor.
+in volumes/gh-runner-org-<org>-<host>-<instance>/ as microvm.log and microvm.pid;
+the active VM PID is microvm.vm.pid. Use --stop for graceful drain or --kill for
+immediate termination.
 
 The runner name and persistent volume directory include the organization, the
 invoking host's short hostname, and the instance number. Ranges launch all selected
@@ -46,11 +51,15 @@ if [[ $internal_mode == true ]]; then
   loop=$3
   host_name=$4
   ssh_host_port=$5
-  pid_file=$6
+  state_directory=$6
+  pid_file="${state_directory}/microvm.pid"
+  vm_pid_file="${state_directory}/microvm.vm.pid"
+  stop_file="${state_directory}/microvm.stop"
   ssh_public_key=${RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY:-}
   repository_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
   cd "$repository_root"
 else
+  action=launch
   ssh_public_key_path=
   declare -a positional_arguments=()
 
@@ -72,6 +81,14 @@ else
         ssh_public_key_path=$2
         shift 2
         ;;
+      --stop | --kill)
+        if [[ $action != launch ]]; then
+          printf 'Only one management action may be specified.\n' >&2
+          exit 2
+        fi
+        action=${1#--}
+        shift
+        ;;
       --)
         shift
         positional_arguments+=("$@")
@@ -88,7 +105,11 @@ else
     esac
   done
 
-  if ((${#positional_arguments[@]} < 1 || ${#positional_arguments[@]} > 3)); then
+  maximum_arguments=3
+  if [[ $action != launch ]]; then
+    maximum_arguments=2
+  fi
+  if ((${#positional_arguments[@]} < 1 || ${#positional_arguments[@]} > maximum_arguments)); then
     usage >&2
     exit 2
   fi
@@ -96,6 +117,11 @@ else
   organization=${positional_arguments[0]}
   instance_specification=${positional_arguments[1]:-1}
   loop=${positional_arguments[2]:-false}
+
+  if [[ $action != launch && -n $ssh_public_key_path ]]; then
+    printf '%s\n' "--ssh-public-key cannot be used with --${action}." >&2
+    exit 2
+  fi
 
   case "$organization" in
     arntanguy-sandbox | isri-aist) ;;
@@ -176,11 +202,20 @@ run_instance() {
   run_vm() {
     "$runner/bin/microvm-run" &
     active_vm_pid=$!
-    wait "$active_vm_pid"
-    local status=$?
+    printf '%s\n' "$active_vm_pid" >"$vm_pid_file"
+    if wait "$active_vm_pid"; then
+      status=0
+    else
+      status=$?
+    fi
     active_vm_pid=
+    rm -f -- "$vm_pid_file"
     return "$status"
   }
+
+  if [[ -e $stop_file ]]; then
+    return 0
+  fi
 
   if [[ $loop == false ]]; then
     run_vm
@@ -194,6 +229,9 @@ run_instance() {
       status=$?
     fi
     printf 'VM instance %s exited with status %d; restarting.\n' "$instance_number" "$status" >&2
+    if [[ -e $stop_file ]]; then
+      return "$status"
+    fi
   done
 }
 
@@ -206,10 +244,11 @@ if [[ $internal_mode == true ]]; then
     fi
   }
   remove_pid_file() {
-    rm -f -- "$pid_file"
+    rm -f -- "$pid_file" "$vm_pid_file" "$stop_file"
   }
   trap 'stop_active_vm; exit 143' INT TERM
   trap remove_pid_file EXIT
+  printf '%s\n' "$$" >"$pid_file"
   run_instance "$instance_number" "$ssh_host_port"
   exit $?
 fi
@@ -232,6 +271,63 @@ ssh_port_for_instance() {
   esac
   printf '%d\n' "$((port_base + instance_number))"
 }
+
+wait_for_supervisor() {
+  local supervisor_pid=$1
+
+  while kill -0 "$supervisor_pid" 2>/dev/null; do
+    sleep 0.1
+  done
+}
+
+manage_instance() {
+  local instance_number=$1
+  local state_directory="volumes/gh-runner-org-${organization}-${host_name}-${instance_number}"
+  local pid_file="${state_directory}/microvm.pid"
+  local vm_pid_file="${state_directory}/microvm.vm.pid"
+  local stop_file="${state_directory}/microvm.stop"
+  local supervisor_pid
+  local vm_pid
+
+  if [[ ! -f $pid_file ]]; then
+    printf 'No managed VM is running for instance %s.\n' "$instance_number"
+    rm -f -- "$vm_pid_file" "$stop_file"
+    return
+  fi
+
+  supervisor_pid=$(<"$pid_file")
+  if [[ ! $supervisor_pid =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$supervisor_pid" 2>/dev/null; then
+    printf 'Removing stale state for instance %s.\n' "$instance_number"
+    rm -f -- "$pid_file" "$vm_pid_file" "$stop_file"
+    return
+  fi
+
+  if [[ $action == stop ]]; then
+    : >"$stop_file"
+    printf 'Waiting for VM instance %s to finish its current job.\n' "$instance_number"
+    wait_for_supervisor "$supervisor_pid"
+    printf 'VM instance %s stopped gracefully.\n' "$instance_number"
+    return
+  fi
+
+  if [[ -f $vm_pid_file ]]; then
+    vm_pid=$(<"$vm_pid_file")
+    if [[ $vm_pid =~ ^[1-9][0-9]*$ ]] && kill -0 "$vm_pid" 2>/dev/null; then
+      kill -KILL "$vm_pid" 2>/dev/null || true
+    fi
+  fi
+  kill -KILL "$supervisor_pid" 2>/dev/null || true
+  wait_for_supervisor "$supervisor_pid"
+  rm -f -- "$pid_file" "$vm_pid_file" "$stop_file"
+  printf 'VM instance %s killed.\n' "$instance_number"
+}
+
+if [[ $action != launch ]]; then
+  for instance_number in "${instance_numbers[@]}"; do
+    manage_instance "$instance_number"
+  done
+  exit 0
+fi
 
 declare -a launched_pids=()
 cleanup_launches() {
@@ -258,24 +354,40 @@ for instance_number in "${instance_numbers[@]}"; do
       printf 'VM instance %s is already running (PID %s).\n' "$instance_number" "$existing_pid" >&2
       cleanup_launches
     fi
-    rm -f -- "$pid_file"
+    rm -f -- "$pid_file" "${volume_directory}/microvm.vm.pid" "${volume_directory}/microvm.stop"
   fi
+  rm -f -- "${volume_directory}/microvm.vm.pid" "${volume_directory}/microvm.stop"
 
   ssh_port=$(ssh_port_for_instance "$instance_number") || cleanup_launches
 
   RUN_GH_ACTION_MICROVM_SSH_PUBLIC_KEY="$ssh_public_key" \
     nohup "$repository_root/run-gh-action-microvm" \
-      --internal-run-instance "$organization" "$instance_number" "$loop" "$host_name" "$ssh_port" "$pid_file" \
+      --internal-run-instance "$organization" "$instance_number" "$loop" "$host_name" "$ssh_port" "$volume_directory" \
       >"$log_file" 2>&1 < /dev/null &
   launched_pid=$!
   launched_pids+=("$launched_pid")
-  printf '%s\n' "$launched_pid" >"$pid_file"
 
-  printf 'Started VM instance %s (PID %s).\n' "$instance_number" "$launched_pid"
+  state_ready=false
+  for ((attempt = 0; attempt < 20; attempt++)); do
+    if [[ -s $pid_file ]]; then
+      state_ready=true
+      break
+    fi
+    if ! kill -0 "$launched_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 0.05
+  done
+  if [[ $state_ready == false ]]; then
+    printf 'VM instance %s failed to initialize; inspect %s.\n' "$instance_number" "$log_file" >&2
+    cleanup_launches
+  fi
+
+  printf 'Started VM instance %s (PID %s).\n' "$instance_number" "$(cat "$pid_file")"
   printf '  Log:  %s\n' "$log_file"
   printf '  Stop: kill "$(cat %s)"\n' "$pid_file"
   if [[ -n $ssh_port ]]; then
-    printf '  SSH:  ssh -p %s root@127.0.0.1\n' "$ssh_port"
+    printf '  SSH:  ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p %s root@127.0.0.1\n' "$ssh_port"
   fi
 done
 
